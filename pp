@@ -445,15 +445,7 @@ def load_aliases(file):
     if os.path.isfile(file):
         try:
             with open(file, encoding="utf-8") as handle:
-                return   json.load(handle)
-                # Flatten all aliases into a single lookup dict
-                for session_id, alias_map in data.items():
-                    if isinstance(alias_map, dict):
-                        for alias_name, message_id in alias_map.items():
-                            aliases[alias_name] = {
-                                'session': session_id,
-                                'message': message_id
-                            }
+                return  json.load(handle)
         except (json.JSONDecodeError, IOError) as e:
             print(f"Warning: Could not load aliases from {file}: {e}", file=sys.stderr)
     return {}
