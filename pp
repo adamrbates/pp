@@ -317,6 +317,23 @@ def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, method="POST"):
         should_stop.set()
         spinner_thread.join()
 
+def load_aliases(file):
+    if os.path.isfile(file):
+        try:
+            with open(file, encoding="utf-8") as handle:
+                return   json.load(handle)
+                # Flatten all aliases into a single lookup dict
+                for session_id, alias_map in data.items():
+                    if isinstance(alias_map, dict):
+                        for alias_name, message_id in alias_map.items():
+                            aliases[alias_name] = {
+                                'session': session_id,
+                                'message': message_id
+                            }
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not load aliases from {file}: {e}", file=sys.stderr)
+    return {}
+
 def load_session(file):
     messages = []
     if os.path.isfile(file):
@@ -331,6 +348,7 @@ def load_session(file):
         session["order"].append(message["id"])
     if len(messages) > 0:
         session["head"] = messages[-1]["id"]
+    session["aliases"] = load_aliases(".pp_aliases").get(file, {})
     return session
 
 def append_session(config, session, msg):
@@ -471,6 +489,7 @@ def stage_two_message(config, session, args):
         elif len(args) > processed + 1 and args[processed] == '-b':
             processed += 1
             head = args[processed]
+            head = session["aliases"].get(head, head)
             if head == "ROOT":
                 head = None
             elif head not in session["lut"]:
@@ -547,6 +566,7 @@ def stage_two_send(config, session, args):
         if len(args) > processed + 1 and args[processed] == '-b':
             processed += 1
             head = args[processed]
+            head = session["aliases"].get(head, head)
             if head not in session["lut"]:
                 print(f"message id {repr(head)} not found.", file=sys.stderr)
             session["head"] = head
@@ -827,11 +847,74 @@ def echo_message(message, file=sys.stdout):
     # Print footer
     print(f"{'-'*60}", file=file)
 
+ALIAS_FILE = ".pp_aliases"
+
+def stage_one_aliases(config, args):
+    if len(args) == 0:
+        print("Usage: aliases list | show <NAME> | set <ALIAS_NAME> <MESSAGE_ID>", file=sys.stderr)
+        return [[stage_one_help]]
+    
+    # Load aliases
+    aliases = load_aliases(ALIAS_FILE)
+    
+    if args[0] == "list":
+        if not aliases:
+            print("No aliases defined.")
+            return []
+        print(f"\n{'='*60}")
+        print("Defined Aliases")
+        print(f"{'='*60}\n")
+        for session in aliases:
+            for alias, msg_id in sorted(aliases[session].items()):
+                print(f"  {alias} -> {msg_id} (session: {session})")
+        return []
+    
+    elif args[0] == "show":
+        if len(args) < 2:
+            print("expected alias name argument.", file=sys.stderr)
+            return [[stage_one_help]]
+        alias_name = args[1]
+        msg_id = aliases.get(config["session"], {}).get(alias_name)
+        if msg_id:
+            print(f"Alias '{alias_name}' -> '{msg_id}'")
+        else:
+            print(f"No alias named '{alias_name}' found.", file=sys.stderr)
+        return []
+    
+    elif args[0] == "set":
+        if len(args) < 3:
+            print("expected alias_name message_id arguments.", file=sys.stderr)
+            return [[stage_one_help]]
+        session_id = config["session"]
+        alias_name = args[1]
+        message_id = args[2]
+        
+        # Load existing aliases
+        if not os.path.isfile(ALIAS_FILE):
+            json.dump({}, open(ALIAS_FILE, "w", encoding="utf-8"))
+        
+        # Update or create the alias mapping
+        with open(ALIAS_FILE, "r+", encoding="utf-8") as f:
+            data = json.load(f)
+            if session_id not in data:
+                data[session_id] = {}
+            data[session_id][alias_name] = message_id
+            f.seek(0)
+            json.dump(data, f, indent=2)
+        
+        print(f"Set alias '{alias_name}' -> {message_id} for session {session_id}")
+        return []
+    
+    else:
+        print(f"unknown subcommand {args[0]}.", file=sys.stderr)
+        return [[stage_one_help]]
+
 stage_one = {
     "help": stage_one_help,
     stage_one_help: stage_one_help,
     "set": stage_one_set,
     "get": stage_one_get,
+    "aliases": stage_one_aliases,
 }
 stage_two = {
     "message": stage_two_message,
