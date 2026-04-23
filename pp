@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+PP - A command-line interface for interacting with LLM services.
+
+This tool provides a CLI interface to send messages, execute tools,
+and manage conversation sessions with AI models via an HTTP API.
+"""
 
 import re
 from urllib.request import Request, urlopen
@@ -17,7 +23,17 @@ DEFAULT_URL = "http://localhost:1234"
 
 SEPARATOR_MESSAGE = "".join(["=" for _ in range(80)]) + "\nEverything above this will be removed\n" + "".join(["=" for _ in range(80)])
 
+SPINNER_CHARS = '|/-\\'  # Unicode spinner frames
+
+
 def run_spinner(action, should_stop):
+    """
+    Display a spinning animation while waiting.
+    
+    Args:
+        action: The action description to display with spinner
+        should_stop: Event that signals when to stop the spinner
+    """
     while not should_stop.is_set():
         sys.stdout.write(f'\r  {action}... ')  # Initial message
         sys.stdout.flush()
@@ -28,7 +44,22 @@ def run_spinner(action, should_stop):
     sys.stdout.write('\r                        ')  # Clear the last line
     sys.stdout.flush()
 
+
 def bash(config, session, args):
+    """
+    Execute a bash command in the current working directory.
+    
+    Creates a temporary shell script, opens it in an editor for user
+    confirmation, then executes it and returns the output.
+    
+    Args:
+        config: Configuration dictionary with timeout and editor settings
+        session: Current session state
+        args: Dictionary containing 'command' key
+    
+    Returns:
+        Dictionary with stdout, stderr, and returncode from execution
+    """
     file = f".pp_bash_{uuid.uuid4().hex}.sh"
     with open(file, "w", encoding="utf-8") as handle:
         handle.write("# This code will execute when closed.\n")
@@ -61,7 +92,25 @@ def bash(config, session, args):
         'returncode': result.returncode
     }
 
+
 def tool_read(config, session, args):
+    """
+    Read the contents of a file with optional offset and limit.
+    
+    Uses tail/head to efficiently read portions of large files.
+    Supports text files and images (jpg, png, gif, webp). Images are
+    sent as attachments. For text files, output is truncated to last
+    ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB
+    (whichever is hit first). Use offset/limit for large files.
+    
+    Args:
+        config: Configuration dictionary with timeout setting
+        session: Current session state
+        args: Dictionary containing 'path', optional 'offset', and 'limit'
+    
+    Returns:
+        Dictionary with stdout, stderr, and returncode from read operation
+    """
     cmd = ["tail", "-n", f"+{args.get('offset', 0)}", args["path"]]
     if "limit" in args:
         cmd.extend(["|", "head", "-n", f"{args.get('limit', 0)}"])
@@ -79,7 +128,22 @@ def tool_read(config, session, args):
         'returncode': result.returncode
     }
 
+
 def tool_write(config, session, args):
+    """
+    Write content to a file.
+    
+    Creates the file if it doesn't exist, overwrites if it does.
+    Automatically creates parent directories.
+    
+    Args:
+        config: Configuration dictionary (unused)
+        session: Current session state
+        args: Dictionary containing 'path' and 'content'
+    
+    Returns:
+        Dictionary with status message, stderr, and returncode
+    """
     path = args["path"]
     content = args["content"]
     
@@ -109,7 +173,22 @@ def tool_write(config, session, args):
             'returncode': 1
         }
 
+
 def tool_context(config, session, args):
+    """
+    Collect user responses to a series of prompts.
+    
+    Prints each prompt, reads user input from stdin for each one,
+    and returns responses as indexed JSON array.
+    
+    Args:
+        config: Configuration dictionary (unused)
+        session: Current session state
+        args: Dictionary containing 'prompts' list
+    
+    Returns:
+        Dictionary with stdout containing JSON of collected responses
+    """
     prompts = args.get('prompts', [])
     
     context_data = []
@@ -128,7 +207,25 @@ def tool_context(config, session, args):
         'returncode': 0
     }
 
+
 def tool_edit(config, session, args):
+    """
+    Edit a single file using exact text replacement.
+    
+    Every edits[].oldText must match a unique, non-overlapping region
+    of the original file. If two changes affect the same block or
+    nearby lines, merge them into one edit instead of emitting
+    overlapping edits. Do not include large unchanged regions just to
+    connect distant changes.
+    
+    Args:
+        config: Configuration dictionary (unused)
+        session: Current session state
+        args: Dictionary containing 'path' and 'edits' list
+    
+    Returns:
+        Dictionary with empty stdout/stderr and returncode 0 on success
+    """
     file = open(args["path"], encoding="utf-8").read()
     modified = file[:]
     for edit in args.get("edits", []):
@@ -143,6 +240,7 @@ def tool_edit(config, session, args):
         'stderr': '',
         'returncode': 0
     }
+
 
 tools = {
     "bash": {
@@ -288,10 +386,23 @@ tools = {
     },
 }
 
-# Spinner animation characters
-SPINNER_CHARS = '|/-\\'  # Unicode spinner frames
 
 def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, method="POST"):
+    """
+    Make an HTTP request to the configured LLM service.
+    
+    Sends a request with JSON headers and optionally includes data payload.
+    Displays spinner during the request.
+    
+    Args:
+        url: The API endpoint URL
+        data: Optional JSON data payload (will be encoded)
+        timeout: Request timeout in seconds
+        method: HTTP method, defaults to POST
+    
+    Returns:
+        Parsed JSON response or raises HTTPError on failure
+    """
     request = Request(
         url,
         data=data,
@@ -317,7 +428,19 @@ def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, method="POST"):
         should_stop.set()
         spinner_thread.join()
 
+
 def load_aliases(file):
+    """
+    Load aliases from a JSON file.
+    
+    Flattens all aliases into a single lookup dict for quick access.
+    
+    Args:
+        file: Path to the aliases JSON file
+    
+    Returns:
+        Dictionary mapping alias names to session/message info, or empty dict
+    """
     if os.path.isfile(file):
         try:
             with open(file, encoding="utf-8") as handle:
@@ -334,7 +457,20 @@ def load_aliases(file):
             print(f"Warning: Could not load aliases from {file}: {e}", file=sys.stderr)
     return {}
 
+
 def load_session(file):
+    """
+    Load a conversation session from disk.
+    
+    Reads messages from the session file and builds a lookup table
+    for quick access by message ID. Tracks the head (latest) message.
+    
+    Args:
+        file: Path to the session JSONL file
+    
+    Returns:
+        Session dictionary with lut, order, head, and aliases fields
+    """
     messages = []
     if os.path.isfile(file):
         with open(file, encoding="utf-8") as handle:
@@ -351,7 +487,19 @@ def load_session(file):
     session["aliases"] = load_aliases(".pp_aliases").get(file, {})
     return session
 
+
 def append_session(config, session, msg):
+    """
+    Append a message to the current session.
+    
+    Sets parent reference, generates new ID, updates head pointer,
+    and writes the message to disk.
+    
+    Args:
+        config: Configuration dictionary with 'session' key
+        session: Current session state
+        msg: Message dictionary to append
+    """
     msg["parent"] = session.get("head")
     msg["id"] = uuid.uuid4().hex
     session["head"] = msg["id"]
@@ -361,11 +509,32 @@ def append_session(config, session, msg):
         json.dump(msg, f)
         f.write("\n")
 
+
 def new_session(config):
+    """
+    Create a new session file.
+    
+    Generates a unique filename for the session and saves config.
+    
+    Args:
+        config: Configuration dictionary to update with new session path
+    """
     config["session"] = ".pp_session_" + uuid.uuid4().hex
     dump_config(config)
 
+
 def messages_from_session(session):
+    """
+    Extract all messages from a session in chronological order.
+    
+    Traverses backwards from head to root, then reverses the list.
+    
+    Args:
+        session: Session dictionary with lut and head fields
+    
+    Returns:
+        List of message dictionaries in chronological order
+    """
     messages = []
     parent = session.get("head")
     while parent:
@@ -374,7 +543,17 @@ def messages_from_session(session):
         parent = m.get("parent")
     return list(reversed(messages))
 
+
 def load_config():
+    """
+    Load configuration from user home and current directory.
+    
+    Checks both ~/.pp_config and .pp_config, merging values with
+    later file taking precedence. Creates default empty config if needed.
+    
+    Returns:
+        Configuration dictionary merged from all sources
+    """
     config = {}
     if not os.path.isfile(Path.home() / ".pp_config"):
         json.dump({}, open(Path.home() / ".pp_config", "w", encoding="utf-8"))
@@ -386,11 +565,36 @@ def load_config():
         new_session(config)
     return config
 
+
 def dump_config(config):
+    """
+    Save configuration to disk.
+    
+    Writes the config dictionary to .pp_config file.
+    
+    Args:
+        config: Configuration dictionary to save
+    
+    Returns:
+        Empty list (for compatibility with command pattern)
+    """
     json.dump(config, open(".pp_config", "w", encoding="utf-8"))
     return []
 
+
 def stage_one_help(config, args):
+    """
+    Display the help menu and exit.
+    
+    Shows all available commands and their usage information.
+    
+    Args:
+        config: Configuration dictionary (unused)
+        args: Command arguments (unused)
+    
+    Returns:
+        Empty list to terminate command processing
+    """
     print("""
 ================================================================================
                                 PP HELP MENU
@@ -438,11 +642,32 @@ Options for 'send' command:
 
   -b <ID>           Set base message ID
 
+Alias Management
+--------------------------------------------------------------------------------
+
+  aliases list      List all defined aliases with their target messages
+  aliases show <NAME>   Show details for a specific alias
+  aliases set <ALIAS_NAME> <MESSAGE_ID>   Create or update an alias
+
 --------------------------------------------------------------------------------
 """)
     return []
 
+
 def stage_one_set(config, args):
+    """
+    Set a configuration value.
+    
+    Can set either session-specific or global configuration values.
+    Global values are stored in ~/.pp_config.
+    
+    Args:
+        config: Configuration dictionary to update
+        args: List containing key and value arguments
+    
+    Returns:
+        Empty list on success, [[stage_one_help]] if missing arguments
+    """
     if len(args) < 2:
         print("expected key value arguments.", file=sys.stderr)
         return [[stage_one_help]]
@@ -456,7 +681,21 @@ def stage_one_set(config, args):
     dump_config(config)
     return []
 
+
 def stage_one_get(config, args):
+    """
+    Get a configuration value.
+    
+    Retrieves and prints the value for a given key from either
+    session or global configuration.
+    
+    Args:
+        config: Configuration dictionary to read from
+        args: List containing the key argument
+    
+    Returns:
+        Empty list on success, [[stage_one_help]] if missing arguments
+    """
     if len(args) < 1:
         print("expected key arguments.", file=sys.stderr)
         return [[stage_one_help]]
@@ -468,7 +707,23 @@ def stage_one_get(config, args):
     print(config.get(args[0], ""))
     return []
 
+
 def stage_two_message(config, session, args):
+    """
+    Send a new message to the LLM service.
+    
+    Supports multiple input methods: editor (default), commandline (-m flag),
+    and stdin (-- flag). Can set base message ID for continuing conversation
+    or starting fresh with -b ROOT or -r flags.
+    
+    Args:
+        config: Configuration dictionary
+        session: Current session state
+        args: Command arguments including optional input method flags
+    
+    Returns:
+        List of next stages to execute
+    """
     role = "user"
     processed = 0
 
@@ -510,7 +765,21 @@ def stage_two_message(config, session, args):
     
     return [[stage_two_echo_message], [stage_two_send]]
 
+
 def get_editor_contents(config, session):
+    """
+    Get content from user via editor.
+    
+    Opens the default editor with previous message content (if any) and
+    separator markers. Returns the edited content after closing.
+    
+    Args:
+        config: Configuration dictionary with 'editor' key
+        session: Current session state for retrieving previous content
+    
+    Returns:
+        Edited content string, or empty string on error
+    """
     # Step 1: Determine the Editor Command (like $EDITOR in git)
     editor_cmd = config.get("editor", os.environ.get('EDITOR', 'nano'))
     
@@ -560,7 +829,22 @@ def get_editor_contents(config, session):
         except OSError:
             pass
 
+
 def stage_two_send(config, session, args):
+    """
+    Send accumulated messages to the LLM service.
+    
+    Packages all session messages with model and tools info, then sends
+    a request to the chat completions endpoint. Appends response to session.
+    
+    Args:
+        config: Configuration dictionary with URL and timeout settings
+        session: Current session state
+        args: Optional arguments (currently unused)
+    
+    Returns:
+        List of next stages to execute
+    """
     processed = 0
     while len(args) > processed:
         if len(args) > processed + 1 and args[processed] == '-b':
@@ -593,7 +877,23 @@ def stage_two_send(config, session, args):
     append_session(config, session, message)
     return [[stage_two_echo_message], [stage_two_process_tool_calls]]
 
+
 def stage_two_process_tool_calls(config, session, args):
+    """
+    Process tool calls from LLM response.
+    
+    Executes each requested tool with the provided arguments and appends
+    the results as tool messages to the session. If more tools are needed,
+    sends another request; otherwise returns to help menu.
+    
+    Args:
+        config: Configuration dictionary
+        session: Current session state
+        args: Arguments (unused, False flag indicates continue)
+    
+    Returns:
+        [[stage_two_send]] if more tools needed, else []
+    """
     tool_calls = session["lut"].get(session.get("head"), {}).get("tool_calls", [])
     for tool_call in tool_calls:
         id = tool_call.get("id")
@@ -625,7 +925,21 @@ def stage_two_process_tool_calls(config, session, args):
     else:
         return []
 
+
 def stage_two_echo_message(config, session, args):
+    """
+    Display the latest message from session history.
+    
+    Can navigate backwards through history using positional argument.
+    
+    Args:
+        config: Configuration dictionary (unused)
+        session: Current session state
+        args: Optional position index to display
+    
+    Returns:
+        Empty list on success, [[stage_one_help]] if no messages found
+    """
     message = session["lut"].get(session.get("head"))
     pos = 0
     if len(args)>0:
@@ -640,55 +954,39 @@ def stage_two_echo_message(config, session, args):
     echo_message(message)
     return []
 
+
 def stage_two_new_session(config, session, args):
     """
     Start a new session.
     
     This command creates a fresh session and returns to the help menu.
+    
+    Args:
+        config: Configuration dictionary
+        session: Current session state (will be replaced)
+        args: Command arguments (unused)
+    
+    Returns:
+        Empty list after creating new session
     """
     print("Starting new session...")
     new_session(config)
     return []
 
-def stage_two_pop(config, session, args):
-    """
-    Pop the second-to-last message from the session.
-    
-    This command retrieves the second-to-last message in the session,
-    assigns it a new unique ID, and pushes it back to the session.
-    The original last message becomes the parent of the popped message.
-    """
-    # Get all messages in order
-    messages = []
-    parent = session.get("head")
-    while parent:
-        m = session["lut"].get(parent)
-        if m:
-            messages.append(m)
-        parent = m.get("parent")
-    
-    popped_message = {}
-    # Get the second-to-last message (index -2)
-    if len(messages) > 1:
-        popped_message = messages[-2]
-    
-    # Create a new ID for the popped message
-    new_id = uuid.uuid4().hex
-    
-    # Update the popped message with new ID and parent pointer to last message
-    popped_message["id"] = new_id
-    del(popped_message["parent"])
-    
-    # Append the modified message back to session
-    append_session(config, session, popped_message)
-    
-    return []
 
 def stage_two_list_models(config, session, args):
     """
     List models available from the configured server.
     
     Makes a GET request to /v1/models endpoint and prints the JSON response.
+    
+    Args:
+        config: Configuration dictionary with URL and timeout settings
+        session: Current session state (unused)
+        args: Command arguments (unused)
+    
+    Returns:
+        Empty list on success
     """
     
     result = fetch(
@@ -708,7 +1006,15 @@ def stage_two_tree(config, session, args):
     Display the session as a tree structure.
     
     Shows all messages in a hierarchical format with proper indentation
-    and branching characters (├─, └─, │).
+    and branching characters (├──, └──, │).
+    
+    Args:
+        config: Configuration dictionary (unused)
+        session: Current session state
+        args: Command arguments (unused)
+    
+    Returns:
+        Empty list on success
     """
     # Build children map for each node
     children = {}
@@ -732,10 +1038,10 @@ def stage_two_tree(config, session, args):
         """
         # Determine connector character
         if is_last:
-            connector = "└─"
+            connector = "└──"
             next_prefix = prefix + "    "
         else:
-            connector = "├─"
+            connector = "├──"
             next_prefix = prefix + "│   "
         
         # Get role and content for display
@@ -801,7 +1107,19 @@ COLOR_SYSTEM = '\033[1;33m'     # Yellow for system
 COLOR_TOOL = '\033[1;35m'      # Magenta for tool output
 COLOR_HEADER = '\033[1;37m'    # White for headers
 COLOR_FOOTER = '\033[0;90m'    # Dim gray for footers
+
+
 def echo_message(message, file=sys.stdout):
+    """
+    Display a message with formatting and colors.
+    
+    Shows the role, content, reasoning (if any), and tool calls
+    with appropriate color coding based on message type.
+    
+    Args:
+        message: Message dictionary to display
+        file: Output stream (defaults to stdout)
+    """
     role = message.get('role', 'Unknown')
     content = message.get('content', '')
     reasoning_content = message.get('reasoning_content', '')
@@ -926,12 +1244,17 @@ stage_two = {
     "echo": stage_two_echo_message,
     stage_two_echo_message: stage_two_echo_message,
     "new": stage_two_new_session,
-    "pop": stage_two_pop,
     "models": stage_two_list_models,
     "tree": stage_two_tree,
 }
 
 def main():
+    """
+    Main entry point for the PP CLI.
+    
+    Parses command line arguments and routes to appropriate handlers.
+    Supports both interactive mode (no args) and batch mode (with args).
+    """
     commands = []
     if len(sys.argv) > 1:
         commands.append(sys.argv[1:])
