@@ -70,6 +70,7 @@ def bash(config, session, args):
     subprocess.call(editor_cmd.split() + [file])
     if len(open(file, encoding="utf-8").read().strip()) == 0:
         print("user canceled command", file=sys.stderr)
+        return
 
     should_stop = threading.Event()
     spinner_thread = threading.Thread(target=run_spinner, args=("Bashing", should_stop))
@@ -760,6 +761,10 @@ def stage_two_message(config, session, args):
     if method == "editor":
         contents = get_editor_contents(config, session)
     
+    if len(contents.strip()) == 0:
+        print("message content was empty.", file=sys.stderr)
+        return []
+
     # Append the edited content to session
     append_session(config, session, {"role": role, "content": contents})
     
