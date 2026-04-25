@@ -232,17 +232,56 @@ def tool_edit(config, session, args):
     Returns:
         Dictionary with empty stdout/stderr and returncode 0 on success
     """
-    file = open(args["path"], encoding="utf-8").read()
-    modified = file[:]
+    import difflib
+    
+    original = open(args["path"], encoding="utf-8").read()
+    modified = original[:]
     for edit in args.get("edits", []):
         if ("oldText" not in edit or "newText" not in edit):
             print("Incorrect parameters.")
             print(json.dumps(edit, indent=2))
             continue
-        modified = modified.replace(edit.get("oldText", ""), edit.get("newText", ""))
+        applied = modified.replace(edit.get("oldText", ""), edit.get("newText", ""))
+        diff = difflib.unified_diff(
+            modified.splitlines(keepends=True),
+            applied.splitlines(keepends=True),
+            fromfile=args["path"] + " (original)",
+            tofile=args["path"] + " (modified)"
+        )
+        diff_text = ''.join(diff)
+        print("\n" + "="*60)
+        print(f"{COLOR_HEADER}DIFF BEFORE APPLYING CHANGES:{COLOR_RESET}")
+        print("="*60)
+        print(colored_diff(diff_text))
+        print("="*60)
+
+        while True:
+            option = input("apply changes [y/n/q]: ")
+            if option not in ["y", "n", "q"]:
+                print("unknown option")
+                continue
+            if option == "q":
+                print("user cancelled edits")
+                return
+            elif option == "n":
+                break
+            else:
+                modified = applied
+                break
+    
+    # Apply the changes
     open(args["path"], "w", encoding="utf-8").write(modified)
+
+    diff = difflib.unified_diff(
+        modified.splitlines(keepends=True),
+        applied.splitlines(keepends=True),
+        fromfile=args["path"] + " (original)",
+        tofile=args["path"] + " (modified)"
+    )
+    diff_text = ''.join(diff)
+
     return {
-        'stdout': '',
+        'stdout': diff_text,
         'stderr': '',
         'returncode': 0
     }
@@ -367,7 +406,7 @@ tools = {
             "type": "function",
             "function": {
                 "name": "context",
-                "description": "Collects user responses to a series of prompts. Prints each prompt, reads user input from stdin for each one, returns responses as indexed JSON array.",
+                "description": "Collects user responses to a series of prompts. Prints each prompt, reads user input from stdin for each one, and returns responses as an indexed JSON array.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1109,6 +1148,53 @@ COLOR_SYSTEM = '\033[1;33m'     # Yellow for system
 COLOR_TOOL = '\033[1;35m'      # Magenta for tool output
 COLOR_HEADER = '\033[1;37m'    # White for headers
 COLOR_FOOTER = '\033[0;90m'    # Dim gray for footers
+
+# Diff color codes
+COLOR_DIFF_ADD = '\033[1;32m'   # Green for additions
+COLOR_DIFF_REMOVE = '\033[1;31m'  # Red for deletions
+COLOR_DIFF_HEADER = '\033[1;36m' # Cyan for diff headers
+COLOR_DIFF_CONTEXT = '\033[0;90m' # Dim gray for context lines
+
+
+def colored_diff(diff_text):
+    """
+    Apply colorization to diff output.
+    
+    Parses the unified diff format and applies appropriate colors:
+    - + lines (additions): green
+    - - lines (deletions): red  
+    - @@ headers: cyan
+    - other lines: dim gray
+    """
+    if not diff_text:
+        return diff_text
+    
+    result = []
+    for line in diff_text.splitlines():
+        # Skip empty lines and separators
+        if not line or line.startswith('diff --git') or line.startswith('index ') or line.startswith('--- '):
+            result.append(line)
+            continue
+        elif line.startswith('+++ '):
+            result.append(f"{COLOR_HEADER}{line}{COLOR_RESET}")
+            continue
+        # @@ headers get cyan color
+        elif line.startswith('@@'):
+            result.append(f"{COLOR_DIFF_HEADER}{line}{COLOR_RESET}")
+            continue
+        # + lines (additions) get green
+        elif line.startswith('+') and not line.startswith('+++'):
+            result.append(f"{COLOR_DIFF_ADD}{line[1:] if len(line) > 1 else ''}{COLOR_RESET}")
+            continue
+        # - lines (deletions) get red
+        elif line.startswith('-') and not line.startswith('---'):
+            result.append(f"{COLOR_DIFF_REMOVE}{line[1:] if len(line) > 1 else ''}{COLOR_RESET}")
+            continue
+        # Context lines get dim gray
+        else:
+            result.append(f"{COLOR_DIFF_CONTEXT}{line}{COLOR_RESET}")
+    
+    return '\n'.join(result)
 
 
 def echo_message(message, file=sys.stdout):
