@@ -23,7 +23,7 @@ DEFAULT_URL = "http://localhost:1234"
 
 PP_DIRECTORY = Path(".pp")
 SESSIONS_DIRECTORY = PP_DIRECTORY / "sessions"
-GLOBAL_PP_DIRECTORY = Path.home() / PP_DIRECTORY
+GLOBAL_PP_DIRECTORY = Path.home() / ".pp"
 CONFIG_FILENAME = "config"
 MESSAGES_FILENAME = "messages"
 ALIASES_FILENAME = "aliases"
@@ -76,7 +76,7 @@ def bash(config, session, args):
     Returns:
         Dictionary with stdout, stderr, and returncode from execution
     """
-    file = PP_DIRECTORY / SESSIONS_DIRECTORY / config["session"] / f"bash_{uuid.uuid4().hex}.sh"
+    file = SESSIONS_DIRECTORY / config["session"] / f"bash_{uuid.uuid4().hex}.sh"
     with safe_open(file, "w", encoding="utf-8") as handle:
         handle.write("# This code will execute when closed.\n")
         handle.write("# Delete all content to cancel.\n\n")
@@ -502,7 +502,7 @@ def append_session(config, session, msg):
     session["head"] = msg["id"]
     session["lut"][msg["id"]] = msg
     session["order"].append(msg["id"])
-    path = PP_DIRECTORY / SESSIONS_DIRECTORY / config["session"]
+    path = SESSIONS_DIRECTORY / config["session"]
     with open(path / MESSAGES_FILENAME, "a", encoding="utf-8") as f:
         json.dump(msg, f)
         f.write("\n")
@@ -1173,7 +1173,7 @@ def stage_two_aliases(config, sessions, args):
         return [[stage_one_help]]
     
     # Load aliases
-    aliases_file = PP_DIRECTORY / SESSIONS_DIRECTORY / config["session"] / ALIASES_FILENAME
+    aliases_file = SESSIONS_DIRECTORY / config["session"] / ALIASES_FILENAME
     aliases = load_aliases(aliases_file)
     
     if args[0] == "list":
@@ -1223,7 +1223,7 @@ def stage_two_aliases(config, sessions, args):
         return [[stage_one_help]]
     
 def get_session_path(config):
-    return PP_DIRECTORY / SESSIONS_DIRECTORY/ config["session"]
+    return SESSIONS_DIRECTORY/ config["session"]
 
 stage_one = {
     "help": stage_one_help,
