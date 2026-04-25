@@ -21,10 +21,26 @@ import threading
 DEFAULT_TIMEOUT = 100
 DEFAULT_URL = "http://localhost:1234"
 
+PP_DIRECTORY = Path(".pp")
+SESSIONS_DIRECTORY = PP_DIRECTORY / "sessions"
+GLOBAL_PP_DIRECTORY = Path.home() / PP_DIRECTORY
+CONFIG_FILENAME = "config"
+MESSAGES_FILENAME = "messages"
+ALIASES_FILENAME = "aliases"
+
+
 SEPARATOR_MESSAGE = "".join(["=" for _ in range(80)]) + "\nEverything above this will be removed\n" + "".join(["=" for _ in range(80)])
 
 SPINNER_CHARS = '|/-\\'  # Unicode spinner frames
 
+def safe_open(file, mode="r", encoding="utf-8", default=None):
+    path = os.path.dirname(file)
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+    if not os.path.isfile(file) and default is not None:
+        with open(file, "w", encoding=encoding) as handle:
+            handle.write(default)
+    return open(file, mode, encoding=encoding)
 
 def run_spinner(action, should_stop):
     """
@@ -60,15 +76,15 @@ def bash(config, session, args):
     Returns:
         Dictionary with stdout, stderr, and returncode from execution
     """
-    file = f".pp_bash_{uuid.uuid4().hex}.sh"
-    with open(file, "w", encoding="utf-8") as handle:
+    file = PP_DIRECTORY / SESSIONS_DIRECTORY / config["session"] / f"bash_{uuid.uuid4().hex}.sh"
+    with safe_open(file, "w", encoding="utf-8") as handle:
         handle.write("# This code will execute when closed.\n")
         handle.write("# Delete all content to cancel.\n\n")
         handle.write(args["command"])
     
     editor_cmd = config.get("editor", os.environ.get('EDITOR', 'nano'))
     subprocess.call(editor_cmd.split() + [file])
-    if len(open(file, encoding="utf-8").read().strip()) == 0:
+    if len(safe_open(file, encoding="utf-8").read().strip()) == 0:
         print("user canceled command", file=sys.stderr)
         return
 
@@ -148,19 +164,8 @@ def tool_write(config, session, args):
     path = args["path"]
     content = args["content"]
     
-    directory = os.path.dirname(path)
-    if directory and not os.path.exists(directory):
-        try:
-            os.makedirs(directory, exist_ok=True)
-        except OSError as e:
-            return {
-                'stdout': f"Error creating directory: {e}",
-                'stderr': str(e),
-                'returncode': 1
-            }
-    
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with safe_open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return {
             'stdout': f"Successfully wrote {len(content)} bytes to {path}",
@@ -440,18 +445,17 @@ def load_aliases(file):
         file: Path to the aliases JSON file
     
     Returns:
-        Dictionary mapping alias names to session/message info, or empty dict
+        Dictionary mapping alias names to message info, or empty dict
     """
-    if os.path.isfile(file):
-        try:
-            with open(file, encoding="utf-8") as handle:
-                return  json.load(handle)
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"Warning: Could not load aliases from {file}: {e}", file=sys.stderr)
+    try:
+        with safe_open(file, default="{}") as handle:
+            return  json.load(handle)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Warning: Could not load aliases from {file}: {e}", file=sys.stderr)
     return {}
 
 
-def load_session(file):
+def load_session(path):
     """
     Load a conversation session from disk.
     
@@ -459,16 +463,16 @@ def load_session(file):
     for quick access by message ID. Tracks the head (latest) message.
     
     Args:
-        file: Path to the session JSONL file
+        path: Path to the session directory with the JSONL messages file
     
     Returns:
         Session dictionary with lut, order, head, and aliases fields
     """
     messages = []
-    if os.path.isfile(file):
-        with open(file, encoding="utf-8") as handle:
-            for line in handle:
-                messages.append(json.loads(line))
+    file = path / MESSAGES_FILENAME
+    with safe_open(file, default="") as handle:
+        for line in handle:
+            messages.append(json.loads(line))
     session = {}
     session["lut"] = {}
     session["order"] = []
@@ -477,7 +481,7 @@ def load_session(file):
         session["order"].append(message["id"])
     if len(messages) > 0:
         session["head"] = messages[-1]["id"]
-    session["aliases"] = load_aliases(".pp_aliases").get(file, {})
+    session["aliases"] = load_aliases(path / ALIASES_FILENAME)
     return session
 
 
@@ -498,12 +502,13 @@ def append_session(config, session, msg):
     session["head"] = msg["id"]
     session["lut"][msg["id"]] = msg
     session["order"].append(msg["id"])
-    with open(config["session"], "a", encoding="utf-8") as f:
+    path = PP_DIRECTORY / SESSIONS_DIRECTORY / config["session"]
+    with open(path / MESSAGES_FILENAME, "a", encoding="utf-8") as f:
         json.dump(msg, f)
         f.write("\n")
 
 
-def new_session(config):
+def new_session(config, name=None):
     """
     Create a new session file.
     
@@ -512,7 +517,10 @@ def new_session(config):
     Args:
         config: Configuration dictionary to update with new session path
     """
-    config["session"] = ".pp_session_" + uuid.uuid4().hex
+    if name is not None:
+        config["session"] = name
+    else:
+        config["session"] = uuid.uuid4().hex
     dump_config(config)
 
 
@@ -548,12 +556,8 @@ def load_config():
         Configuration dictionary merged from all sources
     """
     config = {}
-    if not os.path.isfile(Path.home() / ".pp_config"):
-        json.dump({}, open(Path.home() / ".pp_config", "w", encoding="utf-8"))
-    config.update(json.load(open(Path.home() / ".pp_config", encoding="utf-8")))
-    if not os.path.isfile(".pp_config"):
-        json.dump({}, open(".pp_config", "w", encoding="utf-8"))
-    config.update(json.load(open(".pp_config", encoding="utf-8")))
+    config.update(json.load(safe_open(GLOBAL_PP_DIRECTORY / CONFIG_FILENAME, default="{}")))
+    config.update(json.load(safe_open(PP_DIRECTORY / CONFIG_FILENAME, default="{}")))
     if "session" not in config:
         new_session(config)
     return config
@@ -563,7 +567,7 @@ def dump_config(config):
     """
     Save configuration to disk.
     
-    Writes the config dictionary to .pp_config file.
+    Writes the config dictionary to .pp/.pp_config file.
     
     Args:
         config: Configuration dictionary to save
@@ -571,7 +575,7 @@ def dump_config(config):
     Returns:
         Empty list (for compatibility with command pattern)
     """
-    json.dump(config, open(".pp_config", "w", encoding="utf-8"))
+    json.dump(config, safe_open(PP_DIRECTORY / CONFIG_FILENAME, "w"))
     return []
 
 
@@ -665,13 +669,14 @@ def stage_one_set(config, args):
         print("expected key value arguments.", file=sys.stderr)
         return [[stage_one_help]]
     if args[0].startswith("global."):
+        global_config_file = GLOBAL_PP_DIRECTORY / CONFIG_FILENAME
         key = args[0][7:]
-        global_config = json.load(open(Path.home() / ".pp_config", encoding="utf-8"))
+        global_config = json.load(safe_open(global_config_file, default="{}"))
         global_config[key] = args[1]
-        json.dump(global_config, open(Path.home() / ".pp_config", "w", encoding="utf-8"))
-        return []
-    config[args[0]] = args[1]
-    dump_config(config)
+        json.dump(global_config, safe_open(global_config_file, "w"))
+    else:
+        config[args[0]] = args[1]
+        dump_config(config)
     return []
 
 
@@ -694,10 +699,10 @@ def stage_one_get(config, args):
         return [[stage_one_help]]
     if args[0].startswith("global."):
         key = args[0][7:]
-        global_config = json.load(open(Path.home() / ".pp_config", encoding="utf-8"))
+        global_config = json.load(safe_open(GLOBAL_PP_DIRECTORY / CONFIG_FILENAME, default="{}"))
         print(global_config.get(args[0], ""))
-        return []
-    print(config.get(args[0], ""))
+    else:
+        print(config.get(args[0], ""))
     return []
 
 
@@ -1162,15 +1167,14 @@ def echo_message(message, file=sys.stdout):
     # Print footer
     print(f"{'-'*60}", file=file)
 
-ALIAS_FILE = ".pp_aliases"
-
-def stage_one_aliases(config, args):
+def stage_two_aliases(config, sessions, args):
     if len(args) == 0:
         print("Usage: aliases list | show <NAME> | set <ALIAS_NAME> <MESSAGE_ID>", file=sys.stderr)
         return [[stage_one_help]]
     
     # Load aliases
-    aliases = load_aliases(ALIAS_FILE)
+    aliases_file = PP_DIRECTORY / SESSIONS_DIRECTORY / config["session"] / ALIASES_FILENAME
+    aliases = load_aliases(aliases_file)
     
     if args[0] == "list":
         if not aliases:
@@ -1204,32 +1208,28 @@ def stage_one_aliases(config, args):
         alias_name = args[1]
         message_id = args[2]
         
-        # Load existing aliases
-        if not os.path.isfile(ALIAS_FILE):
-            json.dump({}, open(ALIAS_FILE, "w", encoding="utf-8"))
-        
         # Update or create the alias mapping
-        with open(ALIAS_FILE, "r+", encoding="utf-8") as f:
+        with open(aliases_file, "r+", default="{}") as f:
             data = json.load(f)
-            if session_id not in data:
-                data[session_id] = {}
-            data[session_id][alias_name] = message_id
+            data[alias_name] = message_id
             f.seek(0)
             json.dump(data, f, indent=2)
         
-        print(f"Set alias '{alias_name}' -> {message_id} for session {session_id}")
+        print(f"Set alias '{alias_name}' -> {message_id}")
         return []
     
     else:
         print(f"unknown subcommand {args[0]}.", file=sys.stderr)
         return [[stage_one_help]]
+    
+def get_session_path(config):
+    return PP_DIRECTORY / SESSIONS_DIRECTORY/ config["session"]
 
 stage_one = {
     "help": stage_one_help,
     stage_one_help: stage_one_help,
     "set": stage_one_set,
     "get": stage_one_get,
-    "aliases": stage_one_aliases,
 }
 stage_two = {
     "message": stage_two_message,
@@ -1243,6 +1243,7 @@ stage_two = {
     "new": stage_two_new_session,
     "models": stage_two_list_models,
     "tree": stage_two_tree,
+    "aliases": stage_two_aliases,
 }
 
 def main():
@@ -1263,7 +1264,7 @@ def main():
         if args[0] in stage_one:
             commands.extend(stage_one[args[0]](config, args[1:]))
             continue
-        session = load_session(config["session"])
+        session = load_session(get_session_path(config))
         if args[0] in stage_two:
             commands.extend(stage_two[args[0]](config, session, args[1:]))
             continue
