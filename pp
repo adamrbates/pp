@@ -24,6 +24,7 @@ DEFAULT_URL = "http://localhost:1234"
 PP_DIRECTORY = Path(".pp")
 SESSIONS_DIRECTORY = PP_DIRECTORY / "sessions"
 GLOBAL_PP_DIRECTORY = Path.home() / ".pp"
+PLUGINS_DIR_NAME = "plugins"
 CONFIG_FILENAME = "config"
 MESSAGES_FILENAME = "messages"
 ALIASES_FILENAME = "aliases"
@@ -32,6 +33,48 @@ ALIASES_FILENAME = "aliases"
 SEPARATOR_MESSAGE = "".join(["=" for _ in range(80)]) + "\nEverything above this will be removed\n" + "".join(["=" for _ in range(80)])
 
 SPINNER_CHARS = '|/-\\'  # Unicode spinner frames
+
+def load_plugins(plugin_dir):
+    """
+    Load tools from Python files in a directory.
+    
+    Each plugin should define a 'register()' function that returns
+    a dictionary of tool definitions to merge into the main tools dict.
+    
+    Args:
+        plugin_dir: Directory containing .py plugins
+    
+    Returns:
+        Dictionary of loaded tool definitions
+    """
+    import importlib.util
+    from pathlib import Path
+    
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    loaded_tools = {}
+    
+    for py_file in sorted(plugin_dir.glob("*.py")):
+        # Skip hidden files and __init__.py
+        if py_file.name.startswith("_") or py_file.name == "__init__.py":
+            continue
+        
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"pp_plugin_{py_file.stem}", py_file)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            
+            spec.loader.exec_module(module)
+            
+            # Check if module has a register function
+            if hasattr(module, 'register'):
+                result = module.register()
+                if isinstance(result, dict):
+                    loaded_tools.update(result)
+        except Exception as e:
+            print(f"Warning: Failed to load {py_file}: {e}", file=sys.stderr)
+    
+    return loaded_tools
 
 def safe_open(file, mode="r", encoding="utf-8", default=None):
     path = os.path.dirname(file)
@@ -1388,6 +1431,10 @@ def main():
         commands.append(sys.argv[1:])
     else:
         commands.append(["help"])
+    
+    tools.update(load_plugins(GLOBAL_PP_DIRECTORY / PLUGINS_DIR_NAME))
+    tools.update(load_plugins(PP_DIRECTORY / PLUGINS_DIR_NAME))
+    
     while len(commands) > 0:
         args = commands.pop(0)
         config = load_config()

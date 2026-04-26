@@ -30,6 +30,70 @@ PP provides a rich set of tools that can be called by AI models:
 | `edit` | Edit files using exact text replacement |
 | `context` | Collect user responses to prompts via stdin |
 
+### 🛠️ Plugin System
+PP supports a plugin system that allows you to extend functionality with custom tools:
+
+```bash
+# Create plugins directory
+mkdir -p ~/.pp/plugins
+
+# Add your custom tool
+./pp help  # Will show: "Loaded X plugin tool(s)"
+```
+
+**Creating a Plugin:**
+
+1. Create a Python file in `~/.pp/plugins/`:
+```python
+# ~/.pp/plugins/mytool.py
+
+def register():
+    """Register new tools with PP"""
+    
+    my_tool = {
+        "function": my_function,
+        "definition": {
+            "type": "function",
+            "function": {
+                "name": "mytool",
+                "description": "A custom tool for doing something special",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": "Input data to process"
+                        }
+                    },
+                    "required": ["input"]
+                }
+            }
+        }
+    }
+    
+    return {"mytool": my_tool}
+
+def my_function(config, session, args):
+    """The actual tool implementation"""
+    input_data = args.get("input", "")
+    result = f"Processed: {input_data}"
+    
+    return {
+        "args": args,
+        "results": {
+            "stdout": result,
+            "stderr": "",
+            "returncode": 0
+        }
+    }
+```
+
+**Plugin Features:**
+- Automatic discovery of `.py` files in `~/.pp/plugins/`
+- Each plugin should define a `register()` function that returns tool definitions
+- Tools are merged into the main tools dictionary automatically
+- Error handling prevents broken plugins from affecting PP functionality
+
 ### 💬 Interactive Shell Commands
 
 #### Configuration
@@ -120,6 +184,11 @@ Configuration is stored in two locations:
 │  ┌──────▼─────────────────────────┐│
 │  │     LLM API Client             ││
 │  │   (Configurable endpoint)      ││
+│  └────────────────────────────────┘│
+│         │                          │
+│  ┌──────▼─────────────────────────┐│
+│  │     Plugin System              ││
+│  │   ~/.pp/plugins/*.py           ││
 │  └────────────────────────────────┘│
 └─────────────────────────────────────┘
 ```
