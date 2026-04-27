@@ -658,7 +658,7 @@ def load_config():
     """
     Load configuration from user home and current directory.
     
-    Checks both ~/.pp_config and .pp_config, merging values with
+    Checks both ~/.pp/config and .pp/config, merging values with
     later file taking precedence. Creates default empty config if needed.
     
     Returns:
@@ -676,7 +676,7 @@ def dump_config(config):
     """
     Save configuration to disk.
     
-    Writes the config dictionary to .pp/.pp_config file.
+    Writes the config dictionary to .pp/config file.
     
     Args:
         config: Configuration dictionary to save
@@ -765,7 +765,7 @@ def stage_one_set(config, args):
     Set a configuration value.
     
     Can set either session-specific or global configuration values.
-    Global values are stored in ~/.pp_config.
+    Global values are stored in ~/.pp/config.
     
     Args:
         config: Configuration dictionary to update
@@ -1002,8 +1002,174 @@ def stage_two_send(config, session, args):
         print(json.dumps(result, indent=2), file=sys.stderr)
         return []
 
+    message = process_llm_response_with_editing(config, message)
+
     append_session(config, session, message)
     return [[stage_two_echo_message], [stage_two_process_tool_calls]]
+
+
+def process_llm_response_with_editing(config, message):
+    """
+    Process LLM response with optional user editing of tool calls.
+    
+    Uses the configured editor to allow JSON editing for each tool call,
+    similar to how bash commands are edited. Validates JSON after editing
+    and allows retry on validation errors.
+    
+    Returns None if user cancels all tool calls.
+    
+    Args:
+        config: Configuration dictionary with 'editor' key
+        message: The LLM response containing tool_calls
+    
+    Returns:
+        Edited message with modified tool_calls, or None if cancelled
+    """
+    import json
+    from pathlib import Path
+    import tempfile
+    
+    tool_calls = message.get("tool_calls", [])
+    
+    if not tool_calls:
+        # No tools needed, just return the message as-is
+        return message
+    
+    print("\n" + "="*60)
+    print("TOOL CALLS TO REVIEW")
+    print("="*60)
+    
+    edited_calls = []
+    for i, tc in enumerate(tool_calls):
+        name = tc.get('function', {}).get('name', 'unknown')
+        args_str = tc.get('function', {}).get('arguments', '{}')
+        if len(args_str) > 100:
+            args_str = args_str[:100] + "..."
+        
+        while True:
+            print(f"\n[{i+1}] {name}")
+            print(f"    Arguments: {args_str}")
+            
+            # Ask user to edit or keep as-is
+            choice = input("Edit (e) / Keep (k) / Skip (s) / Cancel (c): ").strip().lower()
+            
+            if choice == 'e':
+                edited_call, was_edited = edit_tool_call_with_editor(config, tc)
+                if edited_call is None:
+                    print("User cancelled editing.")
+                    continue
+                elif was_edited:
+                    edited_calls.append(edited_call)
+                else:
+                    # Keep original if no changes made
+                    edited_calls.append(tc.copy())
+            elif choice == 'k':
+                edited_calls.append(tc.copy())  # Keep original
+            elif choice == 's':
+                pass  # Skip this tool call
+            elif choice == 'q':
+                raise Exception("user cancelled tool calls.")
+            else:  # cancel or invalid input
+                print(f"Unknown option {repr(choice)}.")
+                continue
+            break
+    
+    if not edited_calls:
+        print("All tool calls skipped. No tools will be executed.")
+        message["tool_calls"] = []
+        return message
+    
+    message["tool_calls"] = edited_calls
+    return message
+
+
+def edit_tool_call_with_editor(config, tool_call):
+    """
+    Edit a tool call using the configured editor.
+    
+    Writes the tool call to a temp file, opens it in an editor,
+    then reads back and validates JSON. Allows retry on validation errors.
+    
+    Args:
+        config: Configuration with 'editor' key
+        tool_call: The tool call dictionary to edit
+    
+    Returns:
+        Tuple of (edited_tool_call, was_edited) or None if cancelled
+    """
+    # Step 1: Prepare the tool call for editing
+    func = tool_call.get('function', {})
+    name = func.get('name', 'unknown')
+    args_str = func.get('arguments', '{}')
+    formatted_args = args_str[:]
+    try:
+        formatted_args = json.dumps(json.loads(formatted_args), indent=2)
+    except:
+        print("json args failed to parse. Using the raw string.", file=sys.stderr)
+
+    # Step 2: Create temp file with original content
+    editor_cmd = config.get("editor", os.environ.get('EDITOR', 'nano'))
+    
+    fd, path = tempfile.mkstemp(suffix='.pp_toolcall')
+    os.close(fd)
+    
+    try:
+        # Write formatted tool call to temp file with comments
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(f"# Tool Call: {name}\n")
+            f.write("# Edit the JSON below. Lines starting with # are ignored.\n")
+            f.write(formatted_args + "\n")
+        
+        print(f"    Opening editor: {editor_cmd}")
+        print(f"    File: {path}")
+        
+        # Step 3: Open in editor
+        result = subprocess.call(editor_cmd.split() + [path])
+        
+        if result != 0:
+            print(f"Editor exited with code {result}")
+            return tool_call.copy(), False
+        
+        # Step 4: Read edited content
+        try:
+            new_content = open(path, encoding='utf-8').read()
+        except IOError as e:
+            print(f"Error reading edited file: {e}")
+            return tool_call.copy(), False
+        
+        # Step 5: Strip comments and whitespace
+        lines = new_content.splitlines()
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('#') or not stripped:
+                continue
+            cleaned_lines.append(stripped)
+        
+        edited_args = '\n'.join(cleaned_lines)
+        
+        # Step 6: Validate JSON
+        try:
+            parsed = json.loads(edited_args)
+            was_edited = parsed != json.loads(tool_call['function']['arguments'])
+            return {**tool_call, 'function': {'name': name, 'arguments': json.dumps(parsed)}}, was_edited
+        except json.JSONDecodeError as e:
+            print(f"\nJSON validation error: {e}")
+            print("Your changes could not be applied. Please try again.")
+            
+            # Allow user to retry editing
+            retry = input("Retry editing? [y/n]: ").strip().lower()
+            if retry == 'y':
+                return edit_tool_call_with_editor(config, tool_call)
+            else:
+                print("Keeping original arguments.")
+                return tool_call.copy(), False
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def stage_two_process_tool_calls(config, session, args):
