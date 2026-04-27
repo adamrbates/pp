@@ -362,7 +362,7 @@ tools = {
             "type": "function",
             "function": {
                 "name": "bash",
-                "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file.",
+                "description": "Execute a bash command in the current working directory. Returns stdout and stderr with automatic truncation for large outputs.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -382,7 +382,7 @@ tools = {
             "type": "function",
             "function": {
                 "name": "read",
-                "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+                "description": "Read a file's contents. Supports text and image files. Output truncates automatically; use offset and limit parameters to read specific portions of large files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -434,7 +434,7 @@ tools = {
             "type": "function",
             "function": {
                 "name": "edit",
-                "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+                "description": "Edit a single file using exact text replacement with user confirmation before applying changes.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -947,6 +947,8 @@ def stage_two_send(config, session, args):
     
     Packages all session messages with model and tools info, then sends
     a request to the chat completions endpoint. Appends response to session.
+    Adds a default system message describing PP as an AI coding assistant
+    if no system message exists in the session.
     
     Args:
         config: Configuration dictionary with URL and timeout settings
@@ -967,6 +969,21 @@ def stage_two_send(config, session, args):
             session["head"] = head
             processed += 1
 
+    # Check for existing system messages and add default one if needed
+    messages_list = list(messages_from_session(session))
+    has_system_message = any(msg.get('role') == 'system' for msg in messages_list)
+    
+    if not has_system_message:
+        # Build a descriptive system message about PP as an AI coding assistant
+        tool_names = ', '.join(sorted(tools.keys()))
+        default_system_message = f"""You are PP, an AI coding assistant designed to help with software development tasks. You have access to the following tools: {tool_names}. Use these tools to read files, write code, execute commands, and perform other development-related tasks as needed. Always explain your reasoning before using tools that modify state or execute commands."""
+        
+        # Insert system message at the beginning of the conversation
+        messages_list.insert(0, {
+            'role': 'system',
+            'content': default_system_message,
+        })
+    
     data = {
         "messages": messages_from_session(session),
         "model": config.get("model", ""),
@@ -1133,8 +1150,9 @@ def stage_two_tree(config, session, args):
     """
     Display the session as a tree structure.
     
-    Shows all messages in a hierarchical format with proper indentation
-    and branching characters (├──, └──, │).
+    Messages in the same conversation chain stay at one visual level.
+    Indentation only increases when there's an actual branching point
+    (a message with multiple children).
     
     Args:
         config: Configuration dictionary (unused)
@@ -1155,32 +1173,22 @@ def stage_two_tree(config, session, args):
             children[parent_id] = []
         children[parent_id].append(msg)
     
-    def print_tree(node, prefix="", is_last=True):
+    def print_tree(node, prefix="", connector="", has_more_siblings=False):
         """
-        Recursively print the tree structure.
+        Recursively print the tree structure with chain-aware indentation.
         
         Args:
             node: The message object to print
-            prefix: Indentation string for this level
-            is_last: Whether this is the last child of its parent
+            prefix: Current indentation string
+            connector: Connector character (├── or └──)
+            has_more_siblings: Whether there are more siblings after this one
         """
-        # Determine connector character
-        if is_last:
-            connector = "└──"
-            next_prefix = prefix + "    "
-        else:
-            connector = "├──"
-            next_prefix = prefix + "│   "
-        
         # Get role and content for display
         msg = node if isinstance(node, dict) else session["lut"].get(node)
         if not msg:
             return
         
         role = msg.get("role", "unknown")
-
-        if role != "user":
-            next_prefix = prefix
 
         # Clean up whitespace: replace multiple newlines with single, strip edges
         content = msg.get("content", "")
@@ -1207,10 +1215,20 @@ def stage_two_tree(config, session, args):
         if not child_list:
             return
         
+        # Determine connector for first child and whether to indent further
+        is_first_child = True
+        next_connector = "├──"
+        
         # Print each child recursively
         for i, child in enumerate(child_list):
-            is_child_last = (i == len(child_list) - 1)
-            print_tree(child, next_prefix, is_child_last)
+            is_last_child = (i == len(child_list) - 1)
+            if is_first_child:
+                connector_char = "└──" if is_last_child else "├──"
+                next_connector = connector_char
+                first_child_prefix = prefix + "    " if is_last_child else prefix + "│   "
+                is_first_child = False
+            
+            print_tree(child, first_child_prefix, next_connector, is_last_child)
     
     # Find and print all root nodes
     roots = [msg_id for msg_id in session["order"] if session["lut"][msg_id].get("parent") is None]
@@ -1222,7 +1240,10 @@ def stage_two_tree(config, session, args):
     # Print each tree rooted at a root node
     for i, root_id in enumerate(roots):
         is_root_last = (i == len(roots) - 1)
-        print_tree(session["lut"][root_id], prefix="", is_last=is_root_last)
+        connector_char = "└──" if is_root_last else "├──"
+        next_connector = connector_char
+        first_child_prefix = "    " if is_root_last else "│   "
+        print_tree(session["lut"][root_id], prefix="", connector=connector_char, has_more_siblings=is_root_last)
     
     return []
 
