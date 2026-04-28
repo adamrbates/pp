@@ -1574,7 +1574,7 @@ def stage_two_aliases(config, sessions, args):
         message_id = args[2]
         
         # Update or create the alias mapping
-        with open(aliases_file, "r+", default="{}") as f:
+        with safe_open(aliases_file, "r+", default="{}") as f:
             data = json.load(f)
             data[alias_name] = message_id
             f.seek(0)
