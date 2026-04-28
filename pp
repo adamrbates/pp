@@ -108,8 +108,7 @@ def bash(config, session, args):
     """
     Execute a bash command in the current working directory.
     
-    Creates a temporary shell script, opens it in an editor for user
-    confirmation, then executes it and returns the output.
+    Creates a temporary shell script, then executes it and returns the output.
     
     Args:
         config: Configuration dictionary with timeout and editor settings
@@ -119,23 +118,10 @@ def bash(config, session, args):
     Returns:
         Dictionary with stdout, stderr, and returncode from execution
     """
-    headers = [
-        "# This code will execute when closed.",
-        "# Delete all content to cancel.n",
-    ]
     file = SESSIONS_DIRECTORY / config["session"] / f"bash_{uuid.uuid4().hex}.sh"
     with safe_open(file, "w", encoding="utf-8") as handle:
-        for  header in headers:
-            handle.write(f"{header}\n")
-        handle.write("\n")
         handle.write(args["command"])
     
-    editor_cmd = config.get("editor", os.environ.get('EDITOR', 'nano'))
-    subprocess.call(editor_cmd.split() + [file])
-    if len(safe_open(file, encoding="utf-8").read().strip()) == 0:
-        print("user canceled command", file=sys.stderr)
-        return
-
     should_stop = threading.Event()
     spinner_thread = threading.Thread(target=run_spinner, args=("Bashing", should_stop))
     spinner_thread.start()
@@ -152,14 +138,9 @@ def bash(config, session, args):
     spinner_thread.join()
 
     return {
-        "args": {
-            "command": safe_open(file).read(),
-        },
-        "results": {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode,
-        }
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "returncode": result.returncode,
     }
 
 
@@ -193,12 +174,9 @@ def tool_read(config, session, args):
     )
     
     return {
-        "args": args,
-        "results": {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode
-        }
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "returncode": result.returncode
     }
 
 
@@ -224,21 +202,15 @@ def tool_write(config, session, args):
         with safe_open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return {
-            "args": args,
-            "results": {
-                "stdout": f"Successfully wrote {len(content)} bytes to {path}",
-                "stderr": '',
-                "returncode": 0
-            }
+            "stdout": f"Successfully wrote {len(content)} bytes to {path}",
+            "stderr": '',
+            "returncode": 0
         }
     except IOError as e:
         return {
-            "args": args,
-            "results": {
-                "stdout": f"Error writing file: {e}",
-                "stderr": str(e),
-                "returncode": 1
-            }
+            "stdout": f"Error writing file: {e}",
+            "stderr": str(e),
+            "returncode": 1
         }
 
 
@@ -270,12 +242,9 @@ def tool_context(config, session, args):
         context_data.append(item_data)
     
     return {
-        "args": args,
-        "results": {
-            "stdout": json.dumps(context_data, indent=2),
-            "stderr": "",
-            "returncode": 0
-        }
+        "stdout": json.dumps(context_data, indent=2),
+        "stderr": "",
+        "returncode": 0
     }
 
 
@@ -346,12 +315,9 @@ def tool_edit(config, session, args):
     diff_text = ''.join(diff)
 
     return {
-        "args": args,
-        "results": {
-            "stdout": diff_text,
-            "stderr": "",
-            "returncode": 0
-        }
+        "stdout": diff_text,
+        "stderr": "",
+        "returncode": 0
     }
 
 
@@ -1190,7 +1156,6 @@ def stage_two_process_tool_calls(config, session, args):
     """
     message = session["lut"].get(session.get("head"), {})
     tool_calls = message.get("tool_calls", [])
-    actual_tool_calls = []
     messages = []
     for tool_call in tool_calls:
         id = tool_call.get("id")
@@ -1210,23 +1175,11 @@ def stage_two_process_tool_calls(config, session, args):
             print("tool did not return any content.", file=sys.stderr)
             print(json.dumps(tool_call, indent=2), file=sys.stderr)
             return []
-        actual_tool_calls.append({
-            "id": id,
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": json.dumps(content.get("args", {}))
-            }
-        })
         messages.append({
             "role": "tool",
             "tool_call_id": id,
-            "content": json.dumps(content.get("results",{}))
+            "content": json.dumps(content)
         })
-    actual_message = message.copy()
-    del actual_message["id"]
-    actual_message["tool_calls"] = actual_tool_calls
-    append_session(config, session, actual_message)
     for m in messages:
         append_session(config, session, m)
     if len(args)>0 and args[0]==False:
