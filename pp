@@ -17,6 +17,7 @@ import sys
 import subprocess
 import tempfile
 import threading
+import importlib.util
 
 DEFAULT_TIMEOUT = 100
 DEFAULT_URL = "http://localhost:1234"
@@ -29,6 +30,8 @@ CONFIG_FILENAME = "config"
 MESSAGES_FILENAME = "messages"
 ALIASES_FILENAME = "aliases"
 
+# API plugins directories
+API_DIR_NAME = "apis"
 
 SEPARATOR_MESSAGE = "".join(["=" for _ in range(80)]) + "\nEverything above this will be removed\n" + "".join(["=" for _ in range(80)])
 
@@ -36,45 +39,45 @@ SPINNER_CHARS = '|/-\\'  # Unicode spinner frames
 
 def load_plugins(plugin_dir):
     """
-    Load tools from Python files in a directory.
+    Load plugins from Python files in a directory.
     
     Each plugin should define a 'register()' function that returns
-    a dictionary of tool definitions to merge into the main tools dict.
+    a dictionary of plugin definitions to merge into the main plugin dict.
     
     Args:
         plugin_dir: Directory containing .py plugins
     
     Returns:
-        Dictionary of loaded tool definitions
+        Dictionary of loaded plugin definitions loaded from Python files in a directory.
     """
-    import importlib.util
-    from pathlib import Path
     
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    loaded_tools = {}
     
+    plugins = []
     for py_file in sorted(plugin_dir.glob("*.py")):
         # Skip hidden files and __init__.py
         if py_file.name.startswith("_") or py_file.name == "__init__.py":
             continue
         
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"pp_plugin_{py_file.stem}", py_file)
+            spec = importlib.util.spec_from_file_location("", py_file)
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module
             
             spec.loader.exec_module(module)
             
-            # Check if module has a register function
-            if hasattr(module, 'register'):
-                result = module.register()
-                if isinstance(result, dict):
-                    loaded_tools.update(result)
+            plugins.append(module)
         except Exception as e:
             print(f"Warning: Failed to load {py_file}: {e}", file=sys.stderr)
     
-    return loaded_tools
+    loaded = {}
+    for plugin in plugins:
+        if hasattr(module, 'register'):
+            result = module.register()
+            if isinstance(result, dict):
+                loaded.update(result)
+    
+    return loaded
 
 def safe_open(file, mode="r", encoding="utf-8", default=None):
     path = os.path.dirname(file)
@@ -463,6 +466,34 @@ tools = {
             }
         }
     },
+}
+
+def default_models(config, _fetch):
+    result = _fetch(
+        f"{config.get('api.default.url', DEFAULT_URL)}/v1/models",
+        timeout=int(config.get("api.default.timeout", DEFAULT_TIMEOUT)),
+        method="GET")
+    
+    return [model["id"] for model in result.get("data", []) if "id" in model]
+
+def default_prompt(config, messages, tools, _fetch):
+    result = _fetch(
+        f"{config.get('api.default.url', DEFAULT_URL)}/v1/chat/completions",
+        data=json.dumps({
+            "messages": messages,
+            "model": config.get("api.default.model", ""),
+            "tools": tools,
+        }).encode('utf-8'),
+        timeout=int(config.get("api.default.timeout", 100)))
+
+    return result.get("choices", [{}])[0].get("message")
+
+apis = {
+    "default": {
+        "display_name": "OpenAI compatable",
+        "models": default_models,
+        "prompt": default_prompt,
+    }
 }
 
 
@@ -950,18 +981,14 @@ def stage_two_send(config, session, args):
             'content': default_system_message,
         })
     
-    data = {
-        "messages": messages_from_session(session),
-        "model": config.get("model", ""),
-        "tools": [tools[t]["definition"] for t in tools],
-    }
+    tool_definitions = [tools[t]["definition"] for t in tools]
 
-    result = fetch(
-        f"{config.get('url', DEFAULT_URL)}/v1/chat/completions",
-        data=json.dumps(data).encode('utf-8'),
-        timeout=int(config.get("timeout", 100)))
+    api = apis.get(config.get("api", "default"), apis.get("default"))
+    if not api:
+        print("no api found.", file=sys.stderr)
+        return []
 
-    message = result.get("choices", [{}])[0].get("message")
+    message = api["prompt"](config, messages_list, tool_definitions, _fetch=fetch)
 
     if (not message):
         print("no message returned from service.", file=sys.stderr)
@@ -1253,15 +1280,15 @@ def stage_two_list_models(config, session, args):
         Empty list on success
     """
     
-    result = fetch(
-        f"{config.get('url', DEFAULT_URL)}/v1/models",
-        timeout=int(config.get("timeout", DEFAULT_TIMEOUT)),
-        method="GET")
-    
-    for model in result.get("data", []):
-        if "id" not in model:
-            continue
-        print(model["id"])
+    api = apis.get(config.get("api", "default"), apis.get("default"))
+    if not api:
+        print("no api found.", file=sys.stderr)
+        return []
+
+    models = api["models"](config, _fetch=fetch)
+
+    for model in models:
+        print(model)
     return []
 
 
@@ -1575,6 +1602,9 @@ def main():
     tools.update(load_plugins(GLOBAL_PP_DIRECTORY / PLUGINS_DIR_NAME))
     tools.update(load_plugins(PP_DIRECTORY / PLUGINS_DIR_NAME))
     
+    apis.update(load_plugins(GLOBAL_PP_DIRECTORY / API_DIR_NAME))
+    apis.update(load_plugins(PP_DIRECTORY / API_DIR_NAME))
+
     while len(commands) > 0:
         args = commands.pop(0)
         config = load_config()
