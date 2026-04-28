@@ -473,7 +473,8 @@ def default_models(config, _fetch):
         f"{config.get('url', DEFAULT_URL)}/v1/models",
         timeout=int(config.get("timeout", DEFAULT_TIMEOUT)),
         headers=json.loads(config.get("headers", "{}")),
-        method="GET")
+        method="GET",
+        ignore_unverified=config.get("ignore_unverified", False))
     
     return [model["id"] for model in result.get("data", []) if "id" in model]
 
@@ -486,6 +487,7 @@ def default_prompt(config, messages, tools, _fetch):
             "tools": tools,
         }).encode('utf-8'),
         headers=json.loads(config.get("headers", "{}")),
+        ignore_unverified=config.get("ignore_unverified", False),
         timeout=int(config.get("timeout", 100)))
 
     return result.get("choices", [{}])[0].get("message")
@@ -499,7 +501,7 @@ api_providers = {
 }
 
 
-def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, headers={}, method="POST"):
+def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, headers={}, method="POST", ignore_unverified=False):
     """
     Make an HTTP request to the configured LLM service.
     
@@ -515,6 +517,11 @@ def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, headers={}, method="POST"):
     Returns:
         Parsed JSON response or raises HTTPError on failure
     """
+
+    if ignore_unverified:
+        import ssl
+        ssl._create_default_https_context = ssl._create_unverified_context
+
     merged_headers={
         'Content-Type': 'application/json',
         'Accept': 'application/json'
