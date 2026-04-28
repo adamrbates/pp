@@ -1017,7 +1017,7 @@ def process_llm_response_with_editing(config, message):
             print(f"    Arguments: {args_str}")
             
             # Ask user to edit or keep as-is
-            choice = input("Edit (e) / Keep (k) / Skip (s) / Cancel (c): ").strip().lower()
+            choice = input("K\033[1meep (k) \033[0m/ Edit (e) / Skip (s) / Cancel (c): ").strip().lower()
             
             if choice == 'e':
                 edited_call, was_edited = edit_tool_call_with_editor(config, tc)
@@ -1029,7 +1029,7 @@ def process_llm_response_with_editing(config, message):
                 else:
                     # Keep original if no changes made
                     edited_calls.append(tc.copy())
-            elif choice == 'k':
+            elif choice == 'k' or choice == '':
                 edited_calls.append(tc.copy())  # Keep original
             elif choice == 's':
                 pass  # Skip this tool call
