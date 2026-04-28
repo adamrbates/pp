@@ -470,34 +470,36 @@ tools = {
 
 def default_models(config, _fetch):
     result = _fetch(
-        f"{config.get('api.default.url', DEFAULT_URL)}/v1/models",
-        timeout=int(config.get("api.default.timeout", DEFAULT_TIMEOUT)),
+        f"{config.get('url', DEFAULT_URL)}/v1/models",
+        timeout=int(config.get("timeout", DEFAULT_TIMEOUT)),
+        headers=json.loads(config.get("headers", "{}")),
         method="GET")
     
     return [model["id"] for model in result.get("data", []) if "id" in model]
 
 def default_prompt(config, messages, tools, _fetch):
     result = _fetch(
-        f"{config.get('api.default.url', DEFAULT_URL)}/v1/chat/completions",
+        f"{config.get('url', DEFAULT_URL)}/v1/chat/completions",
         data=json.dumps({
             "messages": messages,
-            "model": config.get("api.default.model", ""),
+            "model": config.get("model", ""),
             "tools": tools,
         }).encode('utf-8'),
-        timeout=int(config.get("api.default.timeout", 100)))
+        headers=json.loads(config.get("headers", "{}")),
+        timeout=int(config.get("timeout", 100)))
 
     return result.get("choices", [{}])[0].get("message")
 
-apis = {
-    "default": {
-        "display_name": "OpenAI compatable",
+api_providers = {
+    "openai_v1": {
+        "display_name": "OpenAI v1 compatable",
         "models": default_models,
         "prompt": default_prompt,
     }
 }
 
 
-def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, method="POST"):
+def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, headers={}, method="POST"):
     """
     Make an HTTP request to the configured LLM service.
     
@@ -513,13 +515,15 @@ def fetch(url, data=None, timeout=DEFAULT_TIMEOUT, method="POST"):
     Returns:
         Parsed JSON response or raises HTTPError on failure
     """
+    merged_headers={
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
+    merged_headers.update(headers)
     request = Request(
         url,
         data=data,
-        headers={
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        },
+        headers=merged_headers,
         method=method
     )
     
@@ -983,12 +987,14 @@ def stage_two_send(config, session, args):
     
     tool_definitions = [tools[t]["definition"] for t in tools]
 
-    api = apis.get(config.get("api", "default"), apis.get("default"))
-    if not api:
+    api = config.get("api", "default")
+    api_config = config.get("apis", {}).get(api, {"provider":"openai_v1"})
+    api_provider = api_providers.get(api_config.get("provider", "openai_v1"))
+    if not api_provider:
         print("no api found.", file=sys.stderr)
         return []
 
-    message = api["prompt"](config, messages_list, tool_definitions, _fetch=fetch)
+    message = api_provider["prompt"](api_config, messages_list, tool_definitions, _fetch=fetch)
 
     if (not message):
         print("no message returned from service.", file=sys.stderr)
@@ -1280,12 +1286,14 @@ def stage_two_list_models(config, session, args):
         Empty list on success
     """
     
-    api = apis.get(config.get("api", "default"), apis.get("default"))
-    if not api:
+    api = config.get("api", "default")
+    api_config = config.get("apis", {}).get(api, {"provider":"openai_v1"})
+    api_provider = api_providers.get(api_config.get("provider", "openai_v1"))
+    if not api_provider:
         print("no api found.", file=sys.stderr)
         return []
 
-    models = api["models"](config, _fetch=fetch)
+    models = api_provider["models"](api_config, _fetch=fetch)
 
     for model in models:
         print(model)
@@ -1602,8 +1610,8 @@ def main():
     tools.update(load_plugins(GLOBAL_PP_DIRECTORY / PLUGINS_DIR_NAME))
     tools.update(load_plugins(PP_DIRECTORY / PLUGINS_DIR_NAME))
     
-    apis.update(load_plugins(GLOBAL_PP_DIRECTORY / API_DIR_NAME))
-    apis.update(load_plugins(PP_DIRECTORY / API_DIR_NAME))
+    api_providers.update(load_plugins(GLOBAL_PP_DIRECTORY / API_DIR_NAME))
+    api_providers.update(load_plugins(PP_DIRECTORY / API_DIR_NAME))
 
     while len(commands) > 0:
         args = commands.pop(0)
