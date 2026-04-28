@@ -479,10 +479,18 @@ def default_models(config, _fetch):
     return [model["id"] for model in result.get("data", []) if "id" in model]
 
 def default_prompt(config, messages, tools, _fetch):
+    cleaned = []
+    for message in messages:
+        keys = ["role", "content", "tool_calls", "tool_call_id"]
+        m = {}
+        for key in keys:
+            if key in message:
+                m[key] = message[key]
+        cleaned.append(m)
     result = _fetch(
         f"{config.get('url', DEFAULT_URL)}/v1/chat/completions",
         data=json.dumps({
-            "messages": messages,
+            "messages": cleaned,
             "model": config.get("model", ""),
             "tools": tools,
         }).encode('utf-8'),
