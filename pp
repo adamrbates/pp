@@ -21,6 +21,7 @@ import importlib.util
 
 DEFAULT_TIMEOUT = 100
 DEFAULT_URL = "http://localhost:1234"
+DEFAULT_MAX_TOKENS = 50000
 
 PP_DIRECTORY = Path(".pp")
 SESSIONS_DIRECTORY = PP_DIRECTORY / "sessions"
@@ -492,6 +493,7 @@ def default_prompt(config, messages, tools, _fetch):
         data=json.dumps({
             "messages": cleaned,
             "model": config.get("model", ""),
+            "max_tokens": config.get("max_tokens", DEFAULT_MAX_TOKENS),
             "tools": tools,
         }).encode('utf-8'),
         headers=json.loads(config.get("headers", "{}")),
