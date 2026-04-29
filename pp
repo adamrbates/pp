@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import importlib.util
+import io
 
 DEFAULT_TIMEOUT = 100
 DEFAULT_URL = "http://localhost:1234"
@@ -812,14 +813,15 @@ def stage_one_help(config, args):
 ================================================================================
                                 PP HELP MENU
 ================================================================================
-Configuration
+Configuration Management
 --------------------------------------------------------------------------------
 
   help              Show this help menu and exit
 
-  set <KEY> <VALUE> Set a configuration value (session or global)
-
-  get <KEY>         Get a configuration value
+  config            Manage configuration settings
+                    Subcommands: show, get <KEY>, set <KEY> <VALUE>, remove <KEY>
+                    Use dot-notation for nested values (e.g., apis.local.model)
+                    Add -g flag to operate on global config (~/.pp/)
 
 Interaction & Tools
 --------------------------------------------------------------------------------
@@ -1007,7 +1009,8 @@ def stage_two_message(config, session, args):
     
     Supports multiple input methods: editor (default), commandline (-m flag),
     and stdin (-- flag). Can set base message ID for continuing conversation
-    or starting fresh with -b ROOT or -r flags.
+    or starting fresh with -b ROOT or -r flags. The -e option finds the most
+    recent user message in history and uses it as the initial content.
     
     Args:
         config: Configuration dictionary
@@ -1021,6 +1024,7 @@ def stage_two_message(config, session, args):
     processed = 0
 
     method = "editor"
+    header = ""
     while len(args) > processed:
         if len(args) > processed + 1 and args[processed] == "-m":
             method = "commandline"
@@ -1047,11 +1051,46 @@ def stage_two_message(config, session, args):
         elif len(args) > processed and args[processed] == '-r':
             processed += 1
             session["head"] = None
+        elif len(args) > processed and args[processed] in ['-e', '-E']:
+            # -e: Find the most recent user message in history and add it to the message header
+            # -E: Like -e, but we start a new conversation.
+            flag = args[processed]
+            processed += 1
+            _session = session.copy()
+            if len(args) > processed:
+                head = args[processed]
+                processed += 1
+                head = session["aliases"].get(head, head)
+                if head == "ROOT":
+                    head = None
+                elif head not in session["lut"]:
+                    print(f"message id {repr(head)} not found.", file=sys.stderr)
+                _session["head"] = head
+            messages_list = list(messages_from_session(_session))
+            found_user_message = None
+            for msg in reversed(messages_list):
+                if msg.get('role') == 'user':
+                    found_user_message = msg
+                    break
+            
+            if found_user_message:
+                # Start fresh with the found user message as initial content
+                session["head"] = None
+                header = found_user_message['content']
+            else:
+                print("No previous user messages found for -e option.", file=sys.stderr)
+                return []
+            if flag == '-E':
+                session["head"] = None
         else:
             print(f"unknown arguments {repr(args[processed:])}", file=sys.stderr)
+            return []
     
+    if len(header) == 0:
+        header = echo_message(session["lut"].get(session.get("head"), {}))
+
     if method == "editor":
-        contents = get_editor_contents(config, session)
+        contents = get_editor_contents(config, header)
     
     if len(contents.strip()) == 0:
         print("message content was empty.", file=sys.stderr)
@@ -1063,7 +1102,7 @@ def stage_two_message(config, session, args):
     return [[stage_two_echo_message], [stage_two_send]]
 
 
-def get_editor_contents(config, session):
+def get_editor_contents(config, contents):
     """
     Get content from user via editor.
     
@@ -1072,7 +1111,7 @@ def get_editor_contents(config, session):
     
     Args:
         config: Configuration dictionary with 'editor' key
-        session: Current session state for retrieving previous content
+        contents: The contents to prepopulate the editor with
     
     Returns:
         Edited content string, or empty string on error
@@ -1087,13 +1126,10 @@ def get_editor_contents(config, session):
     try:
         os.close(temp_fd)  # Close fd immediately
         
-        # Get the current message content (from session if exists, else empty)
-        current_msg_id = session.get("head")
-        
         # Write previous content to temp file (or empty for new messages)
         with open(temp_path, 'w', encoding="utf-8") as f:
-            if current_msg_id and current_msg_id in session["lut"]:
-                echo_message(session["lut"][current_msg_id], f)
+            if contents:
+                print(contents, file=f)
             print("", file=f)
             print(SEPARATOR_MESSAGE, file=f)
             print("", file=f)
@@ -1433,7 +1469,7 @@ def stage_two_echo_message(config, session, args):
     if message is None:
         print("no messages found.", file=sys.stderr)
         return []
-    echo_message(message)
+    print(echo_message(message))
     return []
 
 
@@ -1644,7 +1680,7 @@ def colored_diff(diff_text):
     return '\n'.join(result)
 
 
-def echo_message(message, file=sys.stdout):
+def echo_message(message):
     """
     Display a message with formatting and colors.
     
@@ -1653,7 +1689,9 @@ def echo_message(message, file=sys.stdout):
     
     Args:
         message: Message dictionary to display
-        file: Output stream (defaults to stdout)
+
+    Returns:
+        a string that holds the echo'd message
     """
     role = message.get('role', 'Unknown')
     content = message.get('content', '')
@@ -1670,6 +1708,8 @@ def echo_message(message, file=sys.stdout):
     else:
         prefix_color = COLOR_RESET
     
+    file = io.StringIO()
+
     # Print message header with separator
     print(f"\n{'='*60}", file=file)
     print(f"{COLOR_HEADER}  MESSAGE: {role.upper()} {'(' + str(len(content)) + ' chars)'}{COLOR_RESET}", file=file)
@@ -1699,6 +1739,10 @@ def echo_message(message, file=sys.stdout):
     
     # Print footer
     print(f"{'-'*60}", file=file)
+
+    contents = file.getvalue()
+    file.close()
+    return contents
 
 def stage_two_aliases(config, sessions, args):
     if len(args) == 0:

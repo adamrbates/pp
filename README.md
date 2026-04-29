@@ -27,7 +27,7 @@ PP provides a rich set of tools that can be called by AI models:
 | `bash` | Execute shell commands in current directory |
 | `read` | Read file contents (supports offset/limit for large files) |
 | `write` | Write content to files, creates directories automatically |
-| `edit` | Edit files using exact text replacement |
+| `edit` | Edit files using exact text replacement with confirmation |
 | `context` | Collect user responses to prompts via stdin |
 
 ### 🛠️ Plugin System
@@ -96,11 +96,19 @@ def my_function(config, session, args):
 
 ### 💬 Interactive Shell Commands
 
-#### Configuration
+#### Configuration Management
 ```bash
 ./pp help              # Show this help menu and exit
-./pp set <KEY> <VALUE> # Set a configuration value (session or global)
-./pp get <KEY>         # Get a configuration value
+
+./pp config            # Manage configuration settings
+                       Subcommands: show, get <KEY>, set <KEY> <VALUE>, remove <KEY>
+                       Use dot-notation for nested values (e.g., apis.local.model)
+                       Add -g flag to operate on global config (~/.pp/)
+
+./pp config show       # Display full configuration as formatted JSON
+./pp config get <KEY>  # Retrieve a specific value using dot-notation
+./pp config set <KEY> <VALUE>   # Set a configuration value with dot-notation support
+./pp config remove <KEY>    # Delete a configuration value at the given path
 ```
 
 #### Interaction & Tools
@@ -125,6 +133,10 @@ def my_function(config, session, args):
 ./pp models           # List available AI models from the configured server
 
 ./pp tree             # Display the session as a hierarchical tree structure
+
+./pp aliases list     # List all defined aliases with their target messages
+./pp aliases show <NAME>   # Show details for a specific alias
+./pp aliases set <ALIAS_NAME> <MESSAGE_ID>   # Create or update an alias
 ```
 
 ### 📝 Message Options
@@ -150,8 +162,8 @@ When composing messages, PP will open your preferred editor with the previous me
 ## Configuration
 
 Configuration is stored in two locations:
-1. `./.pp_config` - Local session configuration
-2. `~/.pp_config` - Global user configuration
+1. `./.pp/config` - Local session configuration
+2. `~/.pp/config` - Global user configuration
 
 ### Available Config Keys
 - `url` - LLM API endpoint (default: http://localhost:1234)
@@ -159,38 +171,50 @@ Configuration is stored in two locations:
 - `timeout` - Request timeout in seconds (default: 100)
 - `editor` - Default editor command
 - `session` - Session file path
+- `api` - API provider configuration
+- `apis.<name>` - Nested API settings using dot notation
+
+### Dot Notation Configuration
+PP supports nested configuration keys:
+```bash
+# Set a deeply nested value
+./pp set apis.local.model gpt-4o
+
+# Get the value back
+./pp get apis.local.model
+```
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────┐
-│           PP CLI Agent              │
-├─────────────────────────────────────┤
-│  ┌──────────────┐                   │
-│  │   Shell      │◄──────────────────┼── Commands
-│  │   Interface  │                  │
-│  └──────────────┘                  │
-│         │                          │
-│  ┌──────▼─────────────────────────┐│
-│  │     Session Manager            ││
-│  │  (Persistent conversation)     ││
-│  └────────────────────────────────┘│
-│         │                          │
-│  ┌──────▼─────────────────────────┐│
-│  │      Tool Registry             ││
-│  │   bash | read | write | edit   ││
-│  └────────────────────────────────┘│
-│         │                          │
-│  ┌──────▼─────────────────────────┐│
-│  │     LLM API Client             ││
-│  │   (Configurable endpoint)      ││
-│  └────────────────────────────────┘│
-│         │                          │
-│  ┌──────▼─────────────────────────┐│
-│  │     Plugin System              ││
-│  │   ~/.pp/plugins/*.py           ││
-│  └────────────────────────────────┘│
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│           PP CLI Agent                       │
+├─────────────────────────────────────────────┤
+│  ┌───────────────────┐                       │
+│  │   Shell      │◄──────────────────────────► Commands
+│  │   Interface     │                        │
+│  └───────────────────┘                       │
+│         │                                    │
+│  ┌───────────────────────┐                   │
+│  │     Session Manager    │                   │
+│  │  (Persistent conversation)      │
+│  └───────────────────────┘                   │
+│         │                                    │
+│  ┌───────────────────────┐                   │
+│  │      Tool Registry     │                   │
+│  │   bash | read | write | edit    │
+│  └───────────────────────┘                   │
+│         │                                    │
+│  ┌───────────────────────┐                   │
+│  │     LLM API Client     │                   │
+│  │   (Configurable endpoint)      │
+│  └───────────────────────┘                   │
+│         │                                    │
+│  ┌───────────────────────┐                   │
+│  │     Plugin System      │                   │
+│  │   ~/.pp/plugins/*.py       │
+│  └───────────────────────┘                   │
+└─────────────────────────────────────────────┘
 ```
 
 ## Example Workflow
@@ -216,6 +240,24 @@ PP is designed to work with any LLM API that supports:
 - `/v1/chat/completions` endpoint (OpenAI-compatible)
 - JSON request/response format
 - Tool/function calling protocol
+
+## Session Management
+
+PP maintains conversation history in session files:
+- Each session has a unique ID stored in `.pp/sessions/<session_id>/`
+- Messages are stored as JSONL files for efficient streaming
+- Aliases allow quick reference to important messages
+
+## Alias System
+
+Create shortcuts to frequently used prompts:
+```bash
+# Set an alias
+./pp aliases set greeting "<message_id>"
+
+# List all aliases
+./pp aliases list
+```
 
 ## License
 
