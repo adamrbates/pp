@@ -81,6 +81,22 @@ def load_plugins(plugin_dir):
     return loaded
 
 def safe_open(file, mode="r", encoding="utf-8", default=None):
+    """
+    Safely open a file for reading or writing, ensuring the path exists.
+
+    If the parent directory does not exist, it creates the directories recursively.
+    Additionally, if the file does not exist and a 'default' value is provided,
+    it creates the file with that default content immediately before returning the handle.
+
+    Args:
+        file: The path to the file to open (string or Path).
+        mode: File opening mode (e.g., "r", "w"), defaults to read.
+        encoding: Text encoding used, defaults to utf-8.
+        default: Optional content to write if the file is newly created during this call.
+
+    Returns:
+        A file handle object ready for reading or writing.
+    """
     path = os.path.dirname(file)
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
@@ -470,6 +486,19 @@ tools = {
 }
 
 def default_models(config, _fetch):
+    """
+    Retrieve a list of available model IDs from the LLM service provider.
+
+    Queries the '/v1/models' endpoint and extracts the 'id' field from
+    each response entry to return a flat list of supported models.
+
+    Args:
+        config: Configuration dictionary containing URL and timeout settings.
+        _fetch: A callable function used to make HTTP requests (mockable).
+
+    Returns:
+        A list of strings representing available model IDs.
+    """
     result = _fetch(
         f"{config.get('url', DEFAULT_URL)}/v1/models",
         timeout=int(config.get("timeout", DEFAULT_TIMEOUT)),
@@ -480,6 +509,24 @@ def default_models(config, _fetch):
     return [model["id"] for model in result.get("data", []) if "id" in model]
 
 def default_prompt(config, messages, tools, _fetch):
+    """
+    Send a chat completion request to the configured AI service provider.
+
+    Takes a list of message dictionaries (the conversation context), 
+    sanitizes them by keeping only specific keys (role, content, tool_calls), 
+    and sends the payload along with available tool definitions. It expects 
+    the raw response from the endpoint which contains the model's choice.
+
+    Args:
+        config: Configuration dictionary for API settings.
+        messages: A list of message dictionaries representing conversation history.
+        tools: The tools definition object to send in the request.
+        _fetch: Callable used to execute the HTTP request (injectable).
+
+    Returns:
+        The 'message' content from the first choice returned by the model, 
+        or None if the response is empty.
+    """
     cleaned = []
     for message in messages:
         keys = ["role", "content", "tool_calls", "tool_call_id"]
@@ -637,7 +684,11 @@ def append_session(config, session, msg):
 
 def new_session(config, name=None):
     """
-    Create a new session file.
+    Initialize a new conversation session state in memory and on disk.
+
+    This updates the configuration to point to a fresh session directory 
+    by generating a unique hex identifier (or using 'name' if provided). 
+    It ensures the file structure is valid before returning control.
     
     Generates a unique filename for the session and saves config.
     
@@ -690,6 +741,44 @@ def load_config():
     return config
 
 
+def get_nested_value(d, key):
+    """
+    Retrieve a value from a dictionary using dot-notation (e.g., 'a.b.c').
+    Creates no side effects.
+    
+    Args:
+        d: The configuration dictionary.
+        key: A string representing the path, e.g. 'apis.local.model'.
+    
+    Returns:
+        The value found at the path, or empty string if not found.
+    """
+    keys = key.split('.')
+    for k in keys[:-1]:
+        d = d.get(k)
+        if d is None:
+            return ""
+    return d.get(keys[-1], "")
+
+
+def set_nested_value(d, key, value):
+    """
+    Set a value in a dictionary using dot-notation (e.g., 'a.b.c').
+    Creates nested dictionaries if they don't exist.
+    
+    Args:
+        d: The configuration dictionary to modify.
+        key: A string representing the path, e.g. 'apis.local.model'.
+        value: The data to assign at that path.
+    """
+    keys = key.split('.')
+    for k in keys[:-1]:
+        if not isinstance(d.get(k), dict):
+            d[k] = {}
+        d = d[k]
+    d[keys[-1]] = value
+
+
 def dump_config(config):
     """
     Save configuration to disk.
@@ -702,7 +791,7 @@ def dump_config(config):
     Returns:
         Empty list (for compatibility with command pattern)
     """
-    json.dump(config, safe_open(PP_DIRECTORY / CONFIG_FILENAME, "w"))
+    json.dump(config, safe_open(PP_DIRECTORY / CONFIG_FILENAME, "w"), indent=2)
     return []
 
 
@@ -777,59 +866,138 @@ Alias Management
 """)
     return []
 
-
-def stage_one_set(config, args):
+def stage_one_config(config, args):
     """
-    Set a configuration value.
-    
-    Can set either session-specific or global configuration values.
-    Global values are stored in ~/.pp/config.
-    
-    Args:
-        config: Configuration dictionary to update
-        args: List containing key and value arguments
-    
-    Returns:
-        Empty list on success, [[stage_one_help]] if missing arguments
-    """
-    if len(args) < 2:
-        print("expected key value arguments.", file=sys.stderr)
-        return [[stage_one_help]]
-    if args[0].startswith("global."):
-        global_config_file = GLOBAL_PP_DIRECTORY / CONFIG_FILENAME
-        key = args[0][7:]
-        global_config = json.load(safe_open(global_config_file, default="{}"))
-        global_config[key] = args[1]
-        json.dump(global_config, safe_open(global_config_file, "w"))
-    else:
-        config[args[0]] = args[1]
-        dump_config(config)
-    return []
+    Handle the config command with subcommands for show, get, set, and remove.
 
+    Supports:
+      - show: displays full configuration as JSON
+      - get <KEY>: retrieves a specific nested value using dot-notation
+      - set <KEY> <VALUE>: sets a configuration value with dot-notation support
+      - remove <KEY>: deletes a configuration value at the given path
 
-def stage_one_get(config, args):
-    """
-    Get a configuration value.
-    
-    Retrieves and prints the value for a given key from either
-    session or global configuration.
-    
+    Additionally supports the -g flag to operate on global config (stored in ~/.pp/)
+    rather than session-level config. When no subcommand is provided, defaults to displaying
+    the full configuration as formatted JSON.
+
     Args:
         config: Configuration dictionary to read from
-        args: List containing the key argument
-    
+        args: List containing subcommand and arguments
+
     Returns:
-        Empty list on success, [[stage_one_help]] if missing arguments
+        Empty list on success, [[stage_one_help]] if missing arguments or invalid command.
     """
-    if len(args) < 1:
-        print("expected key arguments.", file=sys.stderr)
-        return [[stage_one_help]]
-    if args[0].startswith("global."):
-        key = args[0][7:]
-        global_config = json.load(safe_open(GLOBAL_PP_DIRECTORY / CONFIG_FILENAME, default="{}"))
-        print(global_config.get(args[0], ""))
-    else:
-        print(config.get(args[0], ""))
+    # Check for -g flag before processing subcommands
+    use_global = False
+    if args and args[0] == "-g":
+        use_global = True
+        args.pop(0)  # Remove the -g flag from args
+    
+    if len(args) == 0 or (args[0] not in ("show", "get", "set", "remove") and args[0] != "-g"): 
+        # Default behavior when no subcommand given
+        print(json.dumps(config, indent=2))
+        return []
+    
+    command = args[0]
+    if command == "show":
+        # Display the full configuration as formatted JSON
+        print(json.dumps(config, indent=2))
+        return []
+    elif command == "get":
+        if len(args) < 2:
+            print("expected key argument.", file=sys.stderr)
+            return [[stage_one_help]]
+        
+        # Retrieve value using dot-notation path
+        key = args[1]
+        keys = key.split('.')
+        
+        if use_global:
+            global_config = json.load(safe_open(GLOBAL_PP_DIRECTORY / CONFIG_FILENAME, default="{}"))
+            d = global_config
+        else:
+            d = config
+        
+        for k in keys[:-1]:
+            d = d.get(k) if isinstance(d, dict) else None
+            if d is None:
+                print("")
+                return []
+        
+        # Print the final value or empty string if not found
+        print(d.get(keys[-1], ""))
+        return []
+    elif command == "set":
+        if len(args) < 3:
+            print("expected key value arguments.", file=sys.stderr)
+            return [[stage_one_help]]
+        
+        # Set configuration value using dot-notation path
+        key = args[1]
+        value = ' '.join(args[2:]) if len(args) > 2 else args[1]
+        keys = key.split('.')
+        
+        if use_global:
+            global_config_file = GLOBAL_PP_DIRECTORY / CONFIG_FILENAME
+            global_config = json.load(safe_open(global_config_file, default="{}"))
+            d = global_config
+            for k in keys[:-1]:
+                if not isinstance(d.get(k), dict):
+                    d[k] = {}
+                d = d[k]
+            
+            d[keys[-1]] = value
+            json.dump(global_config, safe_open(global_config_file, "w"))
+        else:
+            # Navigate/create nested structure for the key
+            d = config
+            for k in keys[:-1]:
+                if not isinstance(d.get(k), dict):
+                    d[k] = {}
+                d = d[k]
+            
+            d[keys[-1]] = value
+            dump_config(config)
+    elif command == "remove":
+        if len(args) < 2:
+            print("expected key arguments.", file=sys.stderr)
+            return [[stage_one_help]]
+        
+        # Remove configuration value using dot-notation path
+        key = args[1]
+        keys = key.split('.')
+        
+        if use_global:
+            global_config_file = GLOBAL_PP_DIRECTORY / CONFIG_FILENAME
+            global_config = json.load(safe_open(global_config_file, default="{}"))
+            d = global_config
+            for k in keys[:-1]:
+                if not isinstance(d.get(k), dict):
+                    print(f"Key {repr(key)} not found.", file=sys.stderr)
+                    return []
+                d = d[k]
+            
+            # Delete the final key from the dictionary
+            if keys[-1] in d:
+                del d[keys[-1]]
+                json.dump(global_config, safe_open(global_config_file, "w"))
+            else:
+                print(f"Key {repr(key)} not found.", file=sys.stderr)
+        else:
+            d = config
+            for k in keys[:-1]:
+                if not isinstance(d.get(k), dict):
+                    print(f"Key {repr(key)} not found.", file=sys.stderr)
+                    return []
+                d = d[k]
+            
+            # Delete the final key from the dictionary
+            if keys[-1] in d:
+                del d[keys[-1]]
+                dump_config(config)
+            else:
+                print(f"Key {repr(key)} not found.", file=sys.stderr)
+    
     return []
 
 
@@ -1593,8 +1761,7 @@ def get_session_path(config):
 stage_one = {
     "help": stage_one_help,
     stage_one_help: stage_one_help,
-    "set": stage_one_set,
-    "get": stage_one_get,
+    "config": stage_one_config,
 }
 stage_two = {
     "message": stage_two_message,
